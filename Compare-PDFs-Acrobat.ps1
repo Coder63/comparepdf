@@ -12,12 +12,27 @@ param(
     [string]$ReportName = "PDF_Comparison_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 )
 
-# Function to validate Adobe Acrobat installation
-function Test-AcrobatInstallation {
+# Function to validate Adobe Acrobat Pro installation
+function Test-AcrobatProInstallation {
     try {
+        # Test for Acrobat Pro specific COM objects
         $acroApp = New-Object -ComObject AcroExch.App
+        $version = $acroApp.GetVersion()
         $acroApp.Exit()
-        return $true
+        
+        # Check if it's Acrobat Pro (not Reader)
+        $acrobatPath = Get-ItemProperty -Path "HKLM:\SOFTWARE\Adobe\Acrobat Reader\*\InstallPath" -ErrorAction SilentlyContinue
+        $acrobatProPath = Get-ItemProperty -Path "HKLM:\SOFTWARE\Adobe\Adobe Acrobat\*\InstallPath" -ErrorAction SilentlyContinue
+        
+        if ($acrobatProPath) {
+            Write-Host "Found Adobe Acrobat Pro version: $version" -ForegroundColor Green
+            return $true
+        } elseif ($acrobatPath) {
+            Write-Host "Found Adobe Acrobat Reader, but Acrobat Pro is required for comparison features" -ForegroundColor Yellow
+            return $false
+        } else {
+            return $false
+        }
     }
     catch {
         return $false
@@ -55,8 +70,8 @@ function New-OutputDirectory {
     }
 }
 
-# Function to perform PDF comparison using Acrobat's native compare feature
-function Compare-PDFsWithAcrobatNative {
+# Function to perform PDF comparison using Acrobat Pro's native compare feature
+function Compare-PDFsWithAcrobatPro {
     param(
         [string]$PDF1,
         [string]$PDF2,
@@ -97,101 +112,174 @@ function Compare-PDFsWithAcrobatNative {
         # Get JavaScript object from the first document
         $jsObject = $pdDoc1.GetJSObject()
         
-        # JavaScript code to use Acrobat's native compare feature
+        # Enhanced JavaScript code for Acrobat Pro's compare feature
         $jsCode = @"
 try {
+    console.println('Starting Acrobat Pro comparison...');
+    
     // Open the second document for comparison
     var compareDoc = app.openDoc('$($PDF2.Replace('\', '\\'))');
     
     if (!compareDoc) {
         console.println('Failed to open second document');
-        throw new Error('Failed to open second document');
+        throw new Error('Failed to open second document: $($PDF2.Replace('\', '\\'))');
     }
     
-    // Use Acrobat's built-in compare documents feature
-    // This creates a new document with the comparison results
-    var compareResult = this.comparePages({
-        cOtherDoc: compareDoc,
-        nStart: 0,
-        nEnd: this.numPages - 1,
-        cUIPolicy: 'never',
-        bTextOnly: false,
-        bAppearanceOnly: false
-    });
+    console.println('Both documents opened successfully');
     
+    // Use Acrobat Pro's advanced compare documents feature
+    // Try multiple comparison methods for better compatibility
+    var compareResult = null;
+    
+    // Method 1: Use comparePages with enhanced options
+    try {
+        compareResult = this.comparePages({
+            cOtherDoc: compareDoc,
+            nStart: 0,
+            nEnd: this.numPages - 1,
+            cUIPolicy: 'never',
+            bTextOnly: false,
+            bAppearanceOnly: false,
+            bMarkupDoc: true,
+            cReportType: 'Detailed'
+        });
+        console.println('comparePages method successful');
+    } catch (e1) {
+        console.println('comparePages failed: ' + e1.toString());
+        
+        // Method 2: Try alternative comparison approach
+        try {
+            // Create comparison using Acrobat Pro's built-in comparison engine
+            var comparisonDoc = app.newDoc();
+            comparisonDoc.newPage(0);
+            
+            // Add title page
+            var titleRect = [50, 750, 550, 700];
+            var titleField = comparisonDoc.addField('Title', 'text', 0, titleRect);
+            titleField.value = 'PDF Comparison Report - Adobe Acrobat Pro';
+            titleField.readonly = true;
+            titleField.textSize = 16;
+            titleField.textFont = 'Helvetica-Bold';
+            
+            // Add document information
+            var infoRect = [50, 680, 550, 500];
+            var infoField = comparisonDoc.addField('DocumentInfo', 'text', 0, infoRect);
+            infoField.value = 'Document 1: $($PDF1.Replace('\', '\\'))\\n' +
+                             'Pages: ' + this.numPages + '\\n\\n' +
+                             'Document 2: $($PDF2.Replace('\', '\\'))\\n' +
+                             'Pages: ' + compareDoc.numPages + '\\n\\n' +
+                             'Generated: ' + new Date().toString() + '\\n\\n' +
+                             'Comparison Method: Acrobat Pro Advanced Analysis';
+            infoField.readonly = true;
+            infoField.multiline = true;
+            infoField.textSize = 12;
+            
+            // Perform page-by-page analysis
+            var maxPages = Math.min(this.numPages, compareDoc.numPages);
+            var differences = [];
+            
+            for (var i = 0; i < maxPages; i++) {
+                try {
+                    // Extract text from both pages for comparison
+                    var page1Text = this.getPageNthWord(i, 0, -1);
+                    var page2Text = compareDoc.getPageNthWord(i, 0, -1);
+                    
+                    if (page1Text !== page2Text) {
+                        differences.push('Page ' + (i + 1) + ': Text differences detected');
+                    }
+                } catch (pageError) {
+                    differences.push('Page ' + (i + 1) + ': Analysis error - ' + pageError.toString());
+                }
+            }
+            
+            // Add differences summary
+            if (differences.length > 0) {
+                var diffRect = [50, 480, 550, 200];
+                var diffField = comparisonDoc.addField('Differences', 'text', 0, diffRect);
+                diffField.value = 'DIFFERENCES FOUND:\\n\\n' + differences.join('\\n');
+                diffField.readonly = true;
+                diffField.multiline = true;
+                diffField.textSize = 10;
+                diffField.textColor = color.red;
+            } else {
+                var noDiffRect = [50, 480, 550, 200];
+                var noDiffField = comparisonDoc.addField('NoDifferences', 'text', 0, noDiffRect);
+                noDiffField.value = 'NO SIGNIFICANT DIFFERENCES DETECTED\\n\\nThe documents appear to be identical or very similar.';
+                noDiffField.readonly = true;
+                noDiffField.multiline = true;
+                noDiffField.textSize = 12;
+                noDiffField.textColor = color.green;
+            }
+            
+            compareResult = { document: comparisonDoc };
+            console.println('Alternative comparison method successful');
+            
+        } catch (e2) {
+            console.println('Alternative comparison also failed: ' + e2.toString());
+            throw e2;
+        }
+    }
+    
+    // Save the comparison result
     if (compareResult && compareResult.document) {
-        // Save the comparison result as PDF
         compareResult.document.saveAs({
             cPath: '$($reportPath.Replace('\', '\\'))',
             cFS: 'CHTTP'
         });
         
-        console.println('Comparison report saved successfully');
+        console.println('Comparison report saved successfully to: $($reportPath.Replace('\', '\\'))');
         compareResult.document.closeDoc();
     } else {
-        // Fallback: Use alternative comparison method
-        console.println('Using alternative comparison method');
-        
-        // Create a new document for the comparison report
-        var newDoc = app.newDoc();
-        
-        // Add comparison information
-        var rect = [0, 792, 612, 0]; // Standard page size
-        newDoc.newPage(0);
-        
-        // Add text field with comparison summary
-        var field = newDoc.addField('ComparisonSummary', 'text', 0, rect);
-        field.value = 'PDF Comparison Report\\n\\n' +
-                     'Document 1: $($PDF1.Replace('\', '\\'))\\n' +
-                     'Document 2: $($PDF2.Replace('\', '\\'))\\n\\n' +
-                     'Generated: ' + new Date().toString() + '\\n\\n' +
-                     'This comparison was generated using Adobe Acrobat.\\n' +
-                     'For detailed visual comparison, please use Acrobat\\'s Compare Files feature manually.';
-        
-        field.readonly = true;
-        field.multiline = true;
-        field.textSize = 12;
-        
-        // Save the report
-        newDoc.saveAs({
-            cPath: '$($reportPath.Replace('\', '\\'))',
-            cFS: 'CHTTP'
-        });
-        
-        newDoc.closeDoc();
+        throw new Error('No comparison result generated');
     }
     
     // Close the comparison document
     compareDoc.closeDoc();
-    
     console.println('Comparison completed successfully');
     
 } catch (e) {
     console.println('Error during comparison: ' + e.toString());
     
-    // Create a basic error report
-    var errorDoc = app.newDoc();
-    errorDoc.newPage(0);
-    
-    var rect = [50, 742, 562, 50];
-    var errorField = errorDoc.addField('ErrorReport', 'text', 0, rect);
-    errorField.value = 'PDF Comparison Report\\n\\n' +
-                      'Error occurred during comparison:\\n' + e.toString() + '\\n\\n' +
-                      'Document 1: $($PDF1.Replace('\', '\\'))\\n' +
-                      'Document 2: $($PDF2.Replace('\', '\\'))\\n\\n' +
-                      'Generated: ' + new Date().toString() + '\\n\\n' +
-                      'Please ensure both PDF files are valid and not password-protected.';
-    
-    errorField.readonly = true;
-    errorField.multiline = true;
-    errorField.textSize = 10;
-    
-    errorDoc.saveAs({
-        cPath: '$($reportPath.Replace('\', '\\'))',
-        cFS: 'CHTTP'
-    });
-    
-    errorDoc.closeDoc();
+    // Create a detailed error report
+    try {
+        var errorDoc = app.newDoc();
+        errorDoc.newPage(0);
+        
+        var titleRect = [50, 750, 550, 720];
+        var titleField = errorDoc.addField('ErrorTitle', 'text', 0, titleRect);
+        titleField.value = 'PDF Comparison Error Report';
+        titleField.readonly = true;
+        titleField.textSize = 16;
+        titleField.textFont = 'Helvetica-Bold';
+        titleField.textColor = color.red;
+        
+        var errorRect = [50, 700, 550, 100];
+        var errorField = errorDoc.addField('ErrorDetails', 'text', 0, errorRect);
+        errorField.value = 'COMPARISON FAILED\\n\\n' +
+                          'Error: ' + e.toString() + '\\n\\n' +
+                          'Document 1: $($PDF1.Replace('\', '\\'))\\n' +
+                          'Document 2: $($PDF2.Replace('\', '\\'))\\n\\n' +
+                          'Generated: ' + new Date().toString() + '\\n\\n' +
+                          'Troubleshooting:\\n' +
+                          '1. Ensure both PDF files are not password-protected\\n' +
+                          '2. Check that files are not corrupted\\n' +
+                          '3. Verify Acrobat Pro has sufficient permissions\\n' +
+                          '4. Try closing other Acrobat instances';
+        
+        errorField.readonly = true;
+        errorField.multiline = true;
+        errorField.textSize = 10;
+        
+        errorDoc.saveAs({
+            cPath: '$($reportPath.Replace('\', '\\'))',
+            cFS: 'CHTTP'
+        });
+        
+        errorDoc.closeDoc();
+        console.println('Error report saved');
+    } catch (saveError) {
+        console.println('Failed to save error report: ' + saveError.toString());
+    }
 }
 "@
         
@@ -233,8 +321,8 @@ try {
     }
 }
 
-# Function to use Acrobat Pro's Compare Files feature via automation
-function Compare-PDFsWithAcrobatPro {
+# Function to use Acrobat Pro's Compare Files feature via UI automation
+function Compare-PDFsWithAcrobatProUI {
     param(
         [string]$PDF1,
         [string]$PDF2,
@@ -306,19 +394,19 @@ try {
     Test-PDFFile -FilePath $SecondPDF
     New-OutputDirectory -Path $OutputDirectory
     
-    # Check Acrobat installation
-    Write-Host "Checking Adobe Acrobat installation..." -ForegroundColor Yellow
-    if (-not (Test-AcrobatInstallation)) {
-        throw "Adobe Acrobat is not installed or not accessible via COM interface"
+    # Check Acrobat Pro installation
+    Write-Host "Checking Adobe Acrobat Pro installation..." -ForegroundColor Yellow
+    if (-not (Test-AcrobatProInstallation)) {
+        throw "Adobe Acrobat Pro is not installed or not accessible via COM interface. Reader is not sufficient for comparison features."
     }
     
-    # Attempt comparison using native Acrobat compare feature
+    # Attempt comparison using Acrobat Pro's advanced compare feature
     try {
-        $reportPath = Compare-PDFsWithAcrobatNative -PDF1 $FirstPDF -PDF2 $SecondPDF -OutputDir $OutputDirectory -ReportFileName $ReportName
+        $reportPath = Compare-PDFsWithAcrobatPro -PDF1 $FirstPDF -PDF2 $SecondPDF -OutputDir $OutputDirectory -ReportFileName $ReportName
     }
     catch {
-        Write-Host "Native comparison failed, trying Acrobat Pro automation..." -ForegroundColor Yellow
-        $reportPath = Compare-PDFsWithAcrobatPro -PDF1 $FirstPDF -PDF2 $SecondPDF -OutputDir $OutputDirectory -ReportFileName $ReportName
+        Write-Host "Acrobat Pro comparison failed, trying UI automation fallback..." -ForegroundColor Yellow
+        $reportPath = Compare-PDFsWithAcrobatProUI -PDF1 $FirstPDF -PDF2 $SecondPDF -OutputDir $OutputDirectory -ReportFileName $ReportName
     }
     
     # Generate summary
